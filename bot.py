@@ -32,8 +32,8 @@ CHANNEL_ID = "@BNI_MMAD"
 CHANNEL_LINK = "https://t.me/BNI_MMAD"
 
 # این دو مقدار را با اطلاعات واقعی گروهت تنظیم کن
-GROUP_ID = os.getenv("GROUP_ID", "@YOUR_GROUP_USERNAME")
-GROUP_LINK = os.getenv("GROUP_LINK", "https://t.me/YOUR_GROUP_USERNAME")
+GROUP_ID = os.getenv("GROUP_ID", "@BNI_MMAD1")
+GROUP_LINK = os.getenv("GROUP_LINK", "https://t.me/BNI_MMAD1")
 
 # اطلاعات پرداخت
 CARD = "6219861856357990"
