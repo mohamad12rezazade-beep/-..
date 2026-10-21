@@ -1,12 +1,31 @@
-- name: Set up Python
-  uses: actions/setup-python@v5
-  with:
-    python-version: '3.11'
+name: Telegram Bot
 
-- name: Install dependencies
-  run: |
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
-- name: Run bot
-  run: python bot.py
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get repository
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+        run: python bot.py
