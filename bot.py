@@ -27,13 +27,12 @@ logging.basicConfig(
 TOKEN = os.getenv("BOT_TOKEN", "")
 OWNER_ID = int(os.getenv("OWNER_ID", "8935601841"))
 
-# اطلاعات عضویت
+# چنل و گروه
 CHANNEL_ID = "@BNI_MMAD"
 CHANNEL_LINK = "https://t.me/BNI_MMAD"
 
-# این دو مقدار را با اطلاعات واقعی گروهت تنظیم کن
-GROUP_ID = os.getenv("GROUP_ID", "@BNI_MMAD1")
-GROUP_LINK = os.getenv("GROUP_LINK", "https://t.me/BNI_MMAD1")
+GROUP_ID = "@BNI_MMAD1"
+GROUP_LINK = "https://t.me/BNI_MMAD1"
 
 # اطلاعات پرداخت
 CARD = "6219861856357990"
@@ -45,6 +44,7 @@ DOGS_PRICE = 12
 
 DATA_FILE = Path("orders.json")
 
+# قیمت گیفت‌ها
 GIFTS = {
     "تدی": 60000,
     "قلب": 60000,
@@ -70,6 +70,7 @@ def load_orders():
             )
         except (json.JSONDecodeError, OSError):
             logging.exception("Could not load orders")
+
     return {}
 
 
@@ -145,8 +146,8 @@ def payment_text(amount):
         "💳 اطلاعات پرداخت\n\n"
         f"شماره کارت:\n{CARD}\n\n"
         f"به نام: {CARD_NAME}\n\n"
-        f"مبلغ قابل پرداخت: {amount:,} تومان\n\n"
-        "پس از پرداخت، تصویر رسید را به صورت عکس همین‌جا ارسال کن."
+        f"💰 مبلغ قابل پرداخت: {amount:,} تومان\n\n"
+        "پس از پرداخت، عکس رسید را همین‌جا ارسال کن."
     )
 
 
@@ -156,11 +157,20 @@ async def check_one_membership(bot, chat_id, user_id):
             chat_id=chat_id,
             user_id=user_id,
         )
-        return member.status not in ("left", "kicked")
+
+        if member.status in ("left", "kicked"):
+            return False
+
+        # کاربر محدودشده فقط در صورتی عضو محسوب می‌شود
+        # که هنوز عضو گروه باشد.
+        if member.status == "restricted":
+            return getattr(member, "is_member", False)
+
+        return True
 
     except Exception:
         logging.exception(
-            "Membership check failed: chat=%s user=%s",
+            "Membership check failed for chat=%s user=%s",
             chat_id,
             user_id,
         )
@@ -183,10 +193,10 @@ async def check_membership(bot, user_id):
     return channel_ok and group_ok
 
 
-async def ask_membership(update, context):
-    await update.message.reply_text(
+async def show_membership_prompt(message):
+    await message.reply_text(
         "برای استفاده از ربات، ابتدا در چنل و گروه عضو شو "
-        "و سپس روی «بررسی مجدد» بزن.",
+        "و بعد روی «بررسی مجدد» بزن.",
         reply_markup=membership_keyboard(),
     )
 
@@ -254,14 +264,14 @@ async def handle_contact(
         context.bot,
         update.effective_user.id,
     ):
-        await ask_membership(update, context)
+        await show_membership_prompt(update.message)
         return
 
     context.user_data["state"] = "menu"
 
     await update.message.reply_text(
         "✅ شماره ثبت شد!\n"
-        "عضویت تأیید شد؛ به منوی اصلی خوش آمدی.",
+        "عضویت در چنل و گروه تأیید شد.",
         reply_markup=main_keyboard(),
     )
 
@@ -273,6 +283,7 @@ async def handle_callback(
     query = update.callback_query
     await query.answer()
 
+    # بررسی دوباره عضویت
     if query.data == "check_members":
         if await check_membership(
             context.bot,
@@ -286,11 +297,14 @@ async def handle_callback(
             )
         else:
             await query.message.reply_text(
-                "❌ عضویت در چنل یا گروه هنوز تأیید نشده است.",
+                "❌ هنوز در چنل یا گروه عضو نیستی؛ "
+                "عضویتت را کامل کن و دوباره بررسی کن.",
                 reply_markup=membership_keyboard(),
             )
+
         return
 
+    # تأیید یا رد سفارش
     if query.data.startswith(("approve:", "reject:")):
         if query.from_user.id != OWNER_ID:
             await query.answer(
@@ -327,13 +341,16 @@ async def handle_callback(
                 text=result,
             )
         except Exception:
-            logging.exception("Could not notify user")
+            logging.exception(
+                "Could not notify user about order"
+            )
 
         await query.message.reply_text(
             "✅ وضعیت سفارش ثبت شد."
         )
         return
 
+    # پاسخ پشتیبانی مدیر
     if query.data.startswith("reply:"):
         if query.from_user.id != OWNER_ID:
             await query.answer(
@@ -343,6 +360,7 @@ async def handle_callback(
             return
 
         target_id = int(query.data.split(":", 1)[1])
+
         context.user_data["reply_to"] = target_id
         context.user_data["state"] = "owner_reply"
 
@@ -390,7 +408,7 @@ async def handle_message(
         )
         return
 
-    # دریافت تعداد استارز یا داگز
+    # انتخاب تعداد استارز یا داگز
     if state == "quantity":
         digits = str.maketrans(
             "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
@@ -415,6 +433,7 @@ async def handle_message(
                 return
 
             amount = quantity * DOGS_PRICE
+
             context.user_data["quantity"] = quantity
             context.user_data["amount"] = amount
             context.user_data["state"] = "destination"
@@ -435,6 +454,7 @@ async def handle_message(
                 return
 
             amount = quantity * STAR_PRICE
+
             context.user_data["quantity"] = quantity
             context.user_data["amount"] = amount
             context.user_data["state"] = "destination"
@@ -447,7 +467,7 @@ async def handle_message(
             )
             return
 
-    # دریافت یوزرنیم مقصد برای داگز، استارز و گیفت
+    # دریافت یوزرنیم مقصد
     if state == "destination":
         destination = text.strip()
 
@@ -461,7 +481,7 @@ async def handle_message(
         context.user_data["state"] = "payment"
 
         await message.reply_text(
-            "✅ مقصد سفارش ثبت شد.\n\n"
+            "✅ یوزرنیم مقصد ثبت شد.\n\n"
             + payment_text(context.user_data["amount"])
         )
         return
@@ -469,50 +489,55 @@ async def handle_message(
     # منوی محصولات
     if text == "🛍 منو محصولات سفارش":
         context.user_data["state"] = "menu"
+
         await message.reply_text(
             "یکی از محصولات را انتخاب کن:",
             reply_markup=product_keyboard(),
         )
         return
 
+    # انتخاب داگز
     if text == "🐶 داگز اولترا":
         context.user_data.update({
             "product": "داگز اولترا",
             "quantity": None,
             "amount": None,
             "destination": None,
-            "post_link": None,
             "state": "quantity",
         })
+
         await message.reply_text(
             "تعداد داگز را وارد کن. حداقل ۱۰۰۰."
         )
         return
 
+    # انتخاب استارز
     if text == "⭐ ریکشن استارزی":
         context.user_data.update({
             "product": "ری‌اکشن استارزی",
             "quantity": None,
             "amount": None,
             "destination": None,
-            "post_link": None,
             "state": "quantity",
         })
+
         await message.reply_text(
-            f"تعداد استارز را وارد کن (۱ تا ۱۰۰۰).\n"
+            "تعداد استارز را وارد کن (۱ تا ۱۰۰۰).\n"
             f"قیمت هر استارز: {STAR_PRICE:,} تومان"
         )
         return
 
+    # منوی گیفت‌ها
     if text == "🎁 گیفت":
         context.user_data["state"] = "gift_menu"
+
         await message.reply_text(
             "نوع گیفت را انتخاب کن:",
             reply_markup=gift_keyboard(),
         )
         return
 
-    # انتخاب گیفت و سپس دریافت یوزرنیم
+    # انتخاب گیفت
     if text in GIFT_NAMES:
         gift = GIFT_NAMES[text]
         amount = GIFTS[gift]
@@ -522,7 +547,6 @@ async def handle_message(
             "quantity": 1,
             "amount": amount,
             "destination": None,
-            "post_link": None,
             "state": "destination",
         })
 
@@ -536,6 +560,7 @@ async def handle_message(
     # پشتیبانی
     if text == "📞 پشتیبانی":
         context.user_data["state"] = "support"
+
         await message.reply_text(
             "پیامت را ارسال کن تا برای پشتیبانی فرستاده شود."
         )
@@ -563,6 +588,7 @@ async def handle_message(
         )
 
         context.user_data["state"] = "menu"
+
         await message.reply_text(
             "پیامت برای پشتیبانی ارسال شد.",
             reply_markup=main_keyboard(),
@@ -575,6 +601,7 @@ async def handle_message(
 
     if text == "🔙 بازگشت به منو":
         context.user_data["state"] = "menu"
+
         await message.reply_text(
             "منوی اصلی:",
             reply_markup=main_keyboard(),
@@ -583,13 +610,14 @@ async def handle_message(
 
     if text == "🔙 بازگشت به محصولات":
         context.user_data["state"] = "menu"
+
         await message.reply_text(
             "منوی محصولات:",
             reply_markup=product_keyboard(),
         )
         return
 
-    # دریافت رسید پرداخت
+    # دریافت عکس رسید
     if state == "payment":
         if not message.photo:
             await message.reply_text(
@@ -644,6 +672,7 @@ async def handle_message(
             )
         except Exception:
             logging.exception("Could not send order to owner")
+
             await message.reply_text(
                 "❌ ارسال سفارش برای مدیر ناموفق بود."
             )
@@ -651,7 +680,7 @@ async def handle_message(
 
         try:
             await context.bot.send_message(
-                chat_id=REPORT_CHANNEL,
+                chat_id=CHANNEL_ID,
                 text=(
                     "🛒 سفارش جدید\n"
                     f"کد سفارش: {order_id}\n"
@@ -665,6 +694,7 @@ async def handle_message(
             logging.exception("Could not post report")
 
         context.user_data["state"] = "menu"
+
         await message.reply_text(
             "✅ رسید دریافت شد و برای بررسی مدیر ارسال شد.",
             reply_markup=main_keyboard(),
