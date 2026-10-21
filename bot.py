@@ -3,7 +3,6 @@ from telebot import types
 from telebot.apihelper import ApiTelegramException
 import os
 
-# ================== تنظیمات (از Secrets گیت‌هاب خونده میشه) ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 8935601841))
 CHANNEL_ID = "@BNI_MMAD"
@@ -27,24 +26,24 @@ if not BOT_TOKEN:
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ================== حافظه موقت (با هر بار اجرا پاک میشه!) ==================
-# ⚠️ هشدار: روی GitHub Actions دیتابیس دائمی وجود نداره
-user_state = {}      # uid -> dict (وضعیت فعلی کاربر)
-users_verified = {}  # uid -> bool (شماره تایید شده یا نه)
-orders = []          # لیست سفارش‌ها (موقت)
+user_state = {}
+users_verified = {}
+orders = []
 
-# ================== کیبوردها ==================
+
 def kb_main():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True)
     m.row("🛒 منو محصولات سفارش", "🆘 پشتیبانی")
     m.row("📢 چنل گزارش سفارش‌ها")
     return m
 
+
 def kb_products():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True)
     m.row("⭐ ریکشن استارزی", "🎁 گیفت")
     m.row("🐶 داگز اولترا", "🔙 بازگشت")
     return m
+
 
 def kb_gifts():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -53,10 +52,12 @@ def kb_gifts():
     m.row("💎 الماس - ۴۶۰,۰۰۰ تومان", "🔙 بازگشت")
     return m
 
+
 def kb_phone():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     m.add(types.KeyboardButton("📱 ارسال شماره من", request_contact=True))
     return m
+
 
 def kb_join():
     m = types.InlineKeyboardMarkup()
@@ -65,13 +66,14 @@ def kb_join():
     m.add(types.InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_member"))
     return m
 
+
 def kb_admin_approve(oid, uid):
     m = types.InlineKeyboardMarkup()
     m.add(types.InlineKeyboardButton("✅ تأیید", callback_data=f"approve_{oid}_{uid}"))
     m.add(types.InlineKeyboardButton("❌ رد", callback_data=f"reject_{oid}_{uid}"))
     return m
 
-# ================== بررسی عضویت ==================
+
 def is_member(uid):
     try:
         st_ch = bot.get_chat_member(CHANNEL_ID, uid).status
@@ -81,7 +83,7 @@ def is_member(uid):
     except ApiTelegramException:
         return False
 
-# ================== /start ==================
+
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     uid = message.from_user.id
@@ -93,6 +95,7 @@ def cmd_start(message):
         return
     check_join_and_menu(message)
 
+
 def check_join_and_menu(message):
     uid = message.from_user.id
     if not is_member(uid):
@@ -102,7 +105,7 @@ def check_join_and_menu(message):
         return
     bot.send_message(uid, "🏠 منوی اصلی:", reply_markup=kb_main())
 
-# ================== دریافت شماره ==================
+
 @bot.message_handler(content_types=['contact'])
 def get_contact(message):
     uid = message.from_user.id
@@ -120,7 +123,7 @@ def get_contact(message):
     bot.send_message(uid, "✅ شماره تأیید شد.", reply_markup=types.ReplyKeyboardRemove())
     check_join_and_menu(message)
 
-# ================== بررسی عضویت با دکمه ==================
+
 @bot.callback_query_handler(func=lambda c: c.data == "check_member")
 def cb_check_member(call):
     if is_member(call.from_user.id):
@@ -130,26 +133,29 @@ def cb_check_member(call):
     else:
         bot.answer_callback_query(call.id, "❌ هنوز عضو نشدی!", show_alert=True)
 
-# ================== منوها ==================
+
 @bot.message_handler(func=lambda m: m.text == "🛒 منو محصولات سفارش")
 def menu_products(message):
     bot.send_message(message.chat.id, "محصول را انتخاب کن:", reply_markup=kb_products())
+
 
 @bot.message_handler(func=lambda m: m.text == "🔙 بازگشت")
 def back_main(message):
     user_state.pop(message.from_user.id, None)
     bot.send_message(message.chat.id, "🏠 منوی اصلی:", reply_markup=kb_main())
 
+
 @bot.message_handler(func=lambda m: m.text == "📢 چنل گزارش سفارش‌ها")
 def menu_report(message):
     bot.send_message(message.chat.id, "📢 چنل گزارش: https://t.me/BNI_MMAD")
 
-# ================== داگز اولترا ==================
+
 @bot.message_handler(func=lambda m: m.text == "🐶 داگز اولترا")
 def duges_start(message):
     uid = message.from_user.id
     user_state[uid] = {"type": "duges", "step": "amount"}
     bot.send_message(uid, "🔢 تعداد داگز اولترا را وارد کن (حداقل ۱۰۰۰):")
+
 
 @bot.message_handler(func=lambda m: user_state.get(m.from_user.id, {}).get("type") == "duges"
                                  and user_state[m.from_user.id].get("step") == "amount")
@@ -166,6 +172,7 @@ def duges_amount(message):
     except ValueError:
         bot.send_message(uid, "❌ لطفاً عدد معتبر وارد کن:")
 
+
 @bot.message_handler(func=lambda m: user_state.get(m.from_user.id, {}).get("type") == "duges"
                                  and user_state[m.from_user.id].get("step") == "username")
 def duges_username(message):
@@ -174,7 +181,6 @@ def duges_username(message):
     st["username"] = message.text.strip()
     st["price"] = st["amount"] * PRICE_PER_DUGES
     st["step"] = "receipt"
-    orders.append({"uid": uid, "type": "داگز اولترا", "price": st["price"], "status": "pending"})
     text = (f"🧾 سفارش داگز اولترا\n"
             f"🔢 تعداد: {st['amount']}\n"
             f"👤 یوزرنیم: {st['username']}\n"
@@ -184,12 +190,13 @@ def duges_username(message):
             f"📸 لطفاً رسید پرداخت را ارسال کن.")
     bot.send_message(uid, text, parse_mode="Markdown")
 
-# ================== ریکشن استارزی ==================
+
 @bot.message_handler(func=lambda m: m.text == "⭐ ریکشن استارزی")
 def stars_start(message):
     uid = message.from_user.id
     user_state[uid] = {"type": "stars", "step": "amount"}
     bot.send_message(uid, "🔢 تعداد استارز را وارد کن (حداقل ۱، حداکثر ۱۰۰۰):")
+
 
 @bot.message_handler(func=lambda m: user_state.get(m.from_user.id, {}).get("type") == "stars"
                                  and user_state[m.from_user.id].get("step") == "amount")
@@ -206,6 +213,7 @@ def stars_amount(message):
     except ValueError:
         bot.send_message(uid, "❌ لطفاً عدد معتبر وارد کن:")
 
+
 @bot.message_handler(func=lambda m: user_state.get(m.from_user.id, {}).get("type") == "stars"
                                  and user_state[m.from_user.id].get("step") == "link")
 def stars_link(message):
@@ -214,7 +222,6 @@ def stars_link(message):
     st["link"] = message.text.strip()
     st["price"] = st["amount"] * PRICE_PER_STAR
     st["step"] = "receipt"
-    orders.append({"uid": uid, "type": "ریکشن استارزی", "price": st["price"], "status": "pending"})
     text = (f"🧾 سفارش ریکشن استارزی\n"
             f"⭐ تعداد: {st['amount']}\n"
             f"🔗 لینک: {st['link']}\n"
@@ -224,17 +231,17 @@ def stars_link(message):
             f"📸 لطفاً رسید پرداخت را ارسال کن.")
     bot.send_message(uid, text, parse_mode="Markdown")
 
-# ================== گیفت ==================
+
 @bot.message_handler(func=lambda m: m.text == "🎁 گیفت")
 def gift_start(message):
     bot.send_message(message.chat.id, "🎁 نوع گیفت را انتخاب کن:", reply_markup=kb_gifts())
+
 
 @bot.message_handler(func=lambda m: m.text in GIFTS)
 def gift_selected(message):
     uid = message.from_user.id
     price = GIFTS[message.text]
     user_state[uid] = {"type": "gift", "gift": message.text, "price": price, "step": "receipt"}
-    orders.append({"uid": uid, "type": "گیفت", "price": price, "status": "pending"})
     text = (f"🧾 سفارش گیفت\n"
             f"🎁 نوع: {message.text}\n"
             f"💰 مبلغ: {price:,} تومان\n\n"
@@ -243,12 +250,13 @@ def gift_selected(message):
             f"📸 لطفاً رسید پرداخت را ارسال کن.")
     bot.send_message(uid, text, parse_mode="Markdown")
 
-# ================== پشتیبانی ==================
+
 @bot.message_handler(func=lambda m: m.text == "🆘 پشتیبانی")
 def support_start(message):
     uid = message.from_user.id
     user_state[uid] = {"type": "support", "step": "msg"}
     bot.send_message(uid, "✍️ پیامت را بنویس تا برای پشتیبانی ارسال شود:")
+
 
 @bot.message_handler(func=lambda m: user_state.get(m.from_user.id, {}).get("type") == "support"
                                  and user_state[m.from_user.id].get("step") == "msg")
@@ -261,7 +269,7 @@ def support_forward(message):
     bot.send_message(uid, "✅ پیامت برای پشتیبانی ارسال شد.", reply_markup=kb_main())
     user_state.pop(uid, None)
 
-# ================== دریافت رسید (عکس) ==================
+
 @bot.message_handler(content_types=['photo'])
 def handle_receipt(message):
     uid = message.from_user.id
@@ -285,7 +293,7 @@ def handle_receipt(message):
 
     bot.send_message(uid, "📸 رسید دریافت شد. پس از بررسی توسط مدیر، به تو اطلاع داده می‌شود.")
 
-# ================== تأیید/رد مالک ==================
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("approve_") or c.data.startswith("reject_"))
 def admin_decision(call):
     if call.from_user.id != ADMIN_ID:
@@ -309,7 +317,7 @@ def admin_decision(call):
     except:
         bot.edit_message_text(txt, call.message.chat.id, call.message.message_id, reply_markup=None)
 
-# ================== پاسخ مالک به پشتیبانی ==================
+
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.reply_to_message is not None,
                      content_types=['text'])
 def admin_reply_support(message):
@@ -322,12 +330,7 @@ def admin_reply_support(message):
     except Exception:
         pass
 
-# ================== شروع (فقط یک بار اجرا میشه) ==================
+
 if __name__ == "__main__":
-    print("🤖 ربات شروع به کار کرد (حالت موقت)")
-    # روی GitHub Actions نمیتونیم infinity_polling بزنیم چون نامحدود اجرا میشه
-    # به جاش از polling با تایم‌اوت کوتاه استفاده می‌کنیم
-    try:
-        bot.polling(timeout=20, long_polling_timeout=10)
-    except Exception as e:
-        print(f"خطا: {e}")
+    print("🤖 ربات شروع به کار کرد")
+    bot.polling(timeout=20, long_polling_timeout=10)
