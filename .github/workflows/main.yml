@@ -1,26 +1,12 @@
-name: Run Telegram Bot
+- name: Set up Python
+  uses: actions/setup-python@v5
+  with:
+    python-version: '3.11'
 
-on:
-  schedule:
-    - cron: '*/5 * * * *'   # هر ۵ دقیقه یک بار تلاش می‌کنه
-  workflow_dispatch: {}      # دکمه اجرای دستی
+- name: Install dependencies
+  run: |
+    python -m pip install --upgrade pip
+    pip install -r requirements.txt
 
-jobs:
-  run-bot:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: pip install pyTelegramBotAPI
-      
-      - name: Run bot
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          ADMIN_ID: ${{ secrets.ADMIN_ID }}
-        run: python bot.py
+- name: Run bot
+  run: python bot.py
