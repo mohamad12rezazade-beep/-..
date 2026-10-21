@@ -46,7 +46,7 @@ def load_orders():
         try:
             return json.loads(DATA_FILE.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
-            pass
+            logging.exception("Could not load orders")
     return {}
 
 
@@ -100,16 +100,17 @@ def payment_text(amount):
     )
 
 
+# بررسی عضویت فقط در چنل
 async def check_membership(bot, user_id):
-    for chat_id in ("@BNI_MMAD", "@BNI_MMAD1"):
-        try:
-            member = await bot.get_chat_member(chat_id, user_id)
-            if member.status in ("left", "kicked"):
-                return False
-        except Exception:
-            logging.exception("Membership check failed for %s", chat_id)
-            return False
-    return True
+    try:
+        member = await bot.get_chat_member("@BNI_MMAD", user_id)
+        return member.status not in ("left", "kicked")
+    except Exception:
+        logging.exception(
+            "Membership check failed for user %s",
+            user_id,
+        )
+        return False
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -156,24 +157,37 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["phone"] = phone
 
+    # بررسی عضویت فقط در چنل
     if not await check_membership(
-        context.bot, update.effective_user.id
+        context.bot,
+        update.effective_user.id,
     ):
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 عضویت در چنل", url=CHANNEL_LINK)],
-            [InlineKeyboardButton("👥 عضویت در گروه", url=GROUP_LINK)],
-            [InlineKeyboardButton("🔄 بررسی مجدد", callback_data="check_members")],
+            [
+                InlineKeyboardButton(
+                    "📢 عضویت در چنل",
+                    url=CHANNEL_LINK,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔄 بررسی مجدد",
+                    callback_data="check_members",
+                )
+            ],
         ])
 
         await update.message.reply_text(
-            "برای استفاده از بات، ابتدا در گروه و چنل عضو شو.",
+            "برای استفاده از ربات، ابتدا در چنل عضو شو.",
             reply_markup=keyboard,
         )
         return
 
     context.user_data["state"] = "menu"
+
     await update.message.reply_text(
-        "✅ شماره ثبت شد!\nبه منوی اصلی خوش آمدی.",
+        "✅ شماره ثبت شد!\n"
+        "به منوی اصلی خوش آمدی.",
         reply_markup=main_keyboard(),
     )
 
@@ -184,17 +198,35 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "check_members":
         if await check_membership(context.bot, query.from_user.id):
+            context.user_data["state"] = "menu"
+
             await query.message.reply_text(
                 "✅ عضویت تأیید شد.",
                 reply_markup=main_keyboard(),
             )
         else:
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "📢 عضویت در چنل",
+                        url=CHANNEL_LINK,
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔄 بررسی مجدد",
+                        callback_data="check_members",
+                    )
+                ],
+            ])
+
             await query.message.reply_text(
-                "❌ هنوز عضویت در هر دو مقصد تأیید نشده است."
+                "❌ هنوز در چنل عضو نشده‌ای.",
+                reply_markup=keyboard,
             )
         return
 
-    if query.data.startswith("approve:") or query.data.startswith("reject:"):
+    if query.data.startswith(("approve:", "reject:")):
         action, order_id = query.data.split(":", 1)
 
         if query.from_user.id != OWNER_ID:
@@ -212,32 +244,44 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if action == "approve":
             order["status"] = "approved"
+
             result = "✅ واریز شما تأیید شد."
+
             if order["product"] == "داگز اولترا":
                 result += "\n🐶 سفارش داگز شما تأیید شد."
             elif order["product"] == "ری‌اکشن استارزی":
                 result += "\n⭐ سفارش استارز شما تأیید شد."
             else:
                 result += "\n🎁 سفارش گیفت شما تأیید شد."
+
         else:
             order["status"] = "rejected"
-            result = "❌ رسید سفارش شما تأیید نشد. لطفاً با پشتیبانی تماس بگیرید."
+            result = (
+                "❌ رسید سفارش شما تأیید نشد.\n"
+                "لطفاً با پشتیبانی تماس بگیرید."
+            )
 
         save_orders(orders)
 
-        await context.bot.send_message(
-            chat_id=order["user_id"],
-            text=result,
-        )
-        await query.message.reply_text("عملیات انجام شد.")
+        try:
+            await context.bot.send_message(
+                chat_id=order["user_id"],
+                text=result,
+            )
+        except Exception:
+            logging.exception("Could not notify order user")
+
+        await query.message.reply_text("✅ عملیات انجام شد.")
         return
 
     if query.data.startswith("reply:"):
         if query.from_user.id != OWNER_ID:
+            await query.message.reply_text("⛔ دسترسی ندارید.")
             return
 
         target_id = int(query.data.split(":", 1)[1])
         context.user_data["reply_to"] = target_id
+
         await query.message.reply_text(
             "پیام پاسخ را ارسال کن."
         )
@@ -255,11 +299,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # پاسخ مالک به پیام پشتیبانی
     if user.id == OWNER_ID and context.user_data.get("reply_to"):
         target_id = context.user_data.pop("reply_to")
-        await context.bot.send_message(
-            chat_id=target_id,
-            text="📩 پاسخ پشتیبانی:\n\n" + text,
-        )
-        await message.reply_text("✅ پاسخ ارسال شد.")
+
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="📩 پاسخ پشتیبانی:\n\n" + text,
+            )
+            await message.reply_text("✅ پاسخ ارسال شد.")
+        except Exception:
+            logging.exception("Could not send support reply")
+            await message.reply_text("❌ ارسال پاسخ ناموفق بود.")
+
         return
 
     if context.user_data.get("state") == "phone":
@@ -268,23 +318,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # دریافت تعداد محصولات
     if context.user_data.get("state") == "quantity":
         try:
-            quantity = int(text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")))
+            normalized_text = text.translate(
+                str.maketrans(
+                    "۰۱۲۳۴۵۶۷۸۹",
+                    "0123456789",
+                )
+            )
+            quantity = int(normalized_text)
         except ValueError:
-            await message.reply_text("لطفاً تعداد را به صورت عدد وارد کن.")
+            await message.reply_text(
+                "لطفاً تعداد را به صورت عدد وارد کن."
+            )
             return
 
         product = context.user_data.get("product")
 
         if product == "داگز اولترا":
             if quantity < 1000:
-                await message.reply_text("حداقل تعداد سفارش ۱۰۰۰ داگز است.")
+                await message.reply_text(
+                    "حداقل تعداد سفارش ۱۰۰۰ داگز است."
+                )
                 return
+
             amount = quantity * 12
+
             context.user_data["quantity"] = quantity
             context.user_data["amount"] = amount
             context.user_data["state"] = "destination"
+
             await message.reply_text(
                 "یوزرنیم اکانتی که داگز به آن واریز می‌شود را وارد کن."
             )
@@ -296,26 +360,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "تعداد استارز باید بین ۱ تا ۱۰۰۰ باشد."
                 )
                 return
+
             context.user_data["quantity"] = quantity
             context.user_data["amount"] = None
             context.user_data["state"] = "post_link"
+
             await message.reply_text("لینک پست را ارسال کن.")
             return
 
+    # دریافت مقصد داگز
     if context.user_data.get("state") == "destination":
-        context.user_data["destination"] = text
+        if not text.strip():
+            await message.reply_text(
+                "لطفاً یوزرنیم مقصد را وارد کن."
+            )
+            return
+
+        context.user_data["destination"] = text.strip()
         context.user_data["state"] = "payment"
+
         amount = context.user_data["amount"]
+
         await message.reply_text(payment_text(amount))
         return
 
+    # دریافت لینک پست استارز
     if context.user_data.get("state") == "post_link":
         if not text.startswith(("https://t.me/", "http://t.me/")):
-            await message.reply_text("لطفاً لینک معتبر پست تلگرام را بفرست.")
+            await message.reply_text(
+                "لطفاً لینک معتبر پست تلگرام را بفرست."
+            )
             return
 
         context.user_data["post_link"] = text
         context.user_data["state"] = "payment"
+
         await message.reply_text(
             "برای استارز، قیمت باید پیش از پرداخت مشخص باشد.\n"
             "لطفاً نرخ هر استارز را از مالک استعلام کن.\n\n"
@@ -323,12 +402,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if context.user_data.get("state") == "gift_payment":
-        await message.reply_text(
-            "برای ادامه، رسید پرداخت را به صورت عکس ارسال کن."
-        )
-        return
-
+    # انتخاب منو
     if text == "🛍 منو محصولات سفارش":
         await message.reply_text(
             "یکی از محصولات را انتخاب کن:",
@@ -338,12 +412,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🐶 داگز اولترا":
         context.user_data["product"] = "داگز اولترا"
         context.user_data["state"] = "quantity"
-        await message.reply_text("تعداد داگز را وارد کن. حداقل ۱۰۰۰.")
+
+        await message.reply_text(
+            "تعداد داگز را وارد کن. حداقل ۱۰۰۰."
+        )
 
     elif text == "⭐ ریکشن استارزی":
         context.user_data["product"] = "ری‌اکشن استارزی"
         context.user_data["state"] = "quantity"
-        await message.reply_text("تعداد استارز را وارد کن (۱ تا ۱۰۰۰).")
+
+        await message.reply_text(
+            "تعداد استارز را وارد کن (۱ تا ۱۰۰۰)."
+        )
 
     elif text == "🎁 گیفت":
         await message.reply_text(
@@ -353,44 +433,74 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text in GIFTS:
         context.user_data["product"] = text
+        context.user_data["quantity"] = 1
         context.user_data["amount"] = GIFTS[text]
+        context.user_data["destination"] = None
+        context.user_data["post_link"] = None
         context.user_data["state"] = "payment"
+
         await message.reply_text(payment_text(GIFTS[text]))
 
+    # پشتیبانی
     elif text == "📞 پشتیبانی":
         context.user_data["state"] = "support"
-        await message.reply_text("پیامت را ارسال کن تا برای پشتیبانی فرستاده شود.")
+
+        await message.reply_text(
+            "پیامت را ارسال کن تا برای پشتیبانی فرستاده شود."
+        )
 
     elif context.user_data.get("state") == "support":
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "↩️ پاسخ به کاربر",
-                callback_data=f"reply:{user.id}",
-            )
-        ]])
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "↩️ پاسخ به کاربر",
+                    callback_data=f"reply:{user.id}",
+                )
+            ]
+        ])
 
         await context.bot.send_message(
             chat_id=OWNER_ID,
             text=(
-                f"📩 پیام پشتیبانی\n"
+                "📩 پیام پشتیبانی\n"
                 f"کاربر: {user.id}\n"
-                f"نام: {user.full_name}\n\n{text}"
+                f"نام: {user.full_name}\n\n"
+                f"{text}"
             ),
             reply_markup=keyboard,
         )
+
         context.user_data["state"] = "menu"
-        await message.reply_text("پیامت برای پشتیبانی ارسال شد.", reply_markup=main_keyboard())
+
+        await message.reply_text(
+            "پیامت برای پشتیبانی ارسال شد.",
+            reply_markup=main_keyboard(),
+        )
 
     elif text == "📢 چنل گزارش سفارش‌ها":
         await message.reply_text(CHANNEL_LINK)
 
-    elif text in ("🔙 بازگشت به منو", "🔙 بازگشت به محصولات"):
+    elif text == "🔙 بازگشت به منو":
         context.user_data["state"] = "menu"
-        await message.reply_text("منوی اصلی:", reply_markup=main_keyboard())
 
+        await message.reply_text(
+            "منوی اصلی:",
+            reply_markup=main_keyboard(),
+        )
+
+    elif text == "🔙 بازگشت به محصولات":
+        context.user_data["state"] = "menu"
+
+        await message.reply_text(
+            "منوی محصولات:",
+            reply_markup=product_keyboard(),
+        )
+
+    # دریافت رسید پرداخت
     elif context.user_data.get("state") == "payment" and message.photo:
         orders = load_orders()
-        order_id = str(message.message_id) + "_" + str(user.id)
+
+        order_id = f"{message.message_id}_{user.id}"
 
         order = {
             "user_id": user.id,
@@ -399,6 +509,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "amount": context.user_data.get("amount"),
             "destination": context.user_data.get("destination"),
             "post_link": context.user_data.get("post_link"),
+            "phone": context.user_data.get("phone"),
             "status": "pending",
         }
 
@@ -407,33 +518,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ تأیید", callback_data=f"approve:{order_id}"),
-                InlineKeyboardButton("❌ رد", callback_data=f"reject:{order_id}"),
+                InlineKeyboardButton(
+                    "✅ تأیید",
+                    callback_data=f"approve:{order_id}",
+                ),
+                InlineKeyboardButton(
+                    "❌ رد",
+                    callback_data=f"reject:{order_id}",
+                ),
             ]
         ])
 
-        await context.bot.send_photo(
-            chat_id=OWNER_ID,
-            photo=message.photo[-1].file_id,
-            caption=(
-                f"🛒 سفارش جدید\n"
-                f"کد: {order_id}\n"
-                f"کاربر: {user.id}\n"
-                f"محصول: {order['product']}\n"
-                f"تعداد: {order['quantity']}\n"
-                f"مبلغ: {order['amount']}\n"
-                f"مقصد: {order['destination']}\n"
-                f"لینک پست: {order['post_link']}\n"
-                "وضعیت: در انتظار بررسی"
-            ),
-            reply_markup=keyboard,
-        )
+        try:
+            await context.bot.send_photo(
+                chat_id=OWNER_ID,
+                photo=message.photo[-1].file_id,
+                caption=(
+                    "🛒 سفارش جدید\n"
+                    f"کد: {order_id}\n"
+                    f"کاربر: {user.id}\n"
+                    f"محصول: {order['product']}\n"
+                    f"تعداد: {order['quantity']}\n"
+                    f"مبلغ: {order['amount']}\n"
+                    f"مقصد: {order['destination']}\n"
+                    f"لینک پست: {order['post_link']}\n"
+                    "وضعیت: در انتظار بررسی"
+                ),
+                reply_markup=keyboard,
+            )
+        except Exception:
+            logging.exception("Could not send order to owner")
+
+            await message.reply_text(
+                "❌ ارسال سفارش برای مالک ناموفق بود. "
+                "لطفاً دوباره تلاش کن یا با پشتیبانی تماس بگیر."
+            )
+            return
 
         try:
             await context.bot.send_message(
                 chat_id=REPORT_CHANNEL,
                 text=(
-                    f"🛒 سفارش جدید\n"
+                    "🛒 سفارش جدید\n"
                     f"کد سفارش: {order_id}\n"
                     f"محصول: {order['product']}\n"
                     f"تعداد: {order['quantity']}\n"
@@ -445,6 +571,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.exception("Could not post report")
 
         context.user_data["state"] = "menu"
+
         await message.reply_text(
             "✅ رسید دریافت شد و برای بررسی مالک ارسال شد.",
             reply_markup=main_keyboard(),
@@ -452,7 +579,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif context.user_data.get("state") == "payment":
-        await message.reply_text("لطفاً رسید پرداخت را به صورت عکس ارسال کن.")
+        await message.reply_text(
+            "لطفاً رسید پرداخت را به صورت عکس ارسال کن."
+        )
 
 
 async def post_init(app):
@@ -461,12 +590,25 @@ async def post_init(app):
 
 def main():
     if not TOKEN:
-        raise RuntimeError("BOT_TOKEN environment variable is missing")
+        raise RuntimeError(
+            "BOT_TOKEN environment variable is missing"
+        )
 
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(post_init)
+        .build()
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
+    app.add_handler(
+        MessageHandler(
+            filters.ALL & ~filters.COMMAND,
+            handle_message,
+        )
+    )
 
     app.run_polling()
 
