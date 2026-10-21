@@ -25,7 +25,6 @@ TOKEN = os.getenv("BOT_TOKEN", "")
 OWNER_ID = int(os.getenv("OWNER_ID", "8935601841"))
 
 REPORT_CHANNEL = "@BNI_MMAD"
-GROUP_LINK = "https://t.me/BNI_MMAD1"
 CHANNEL_LINK = "https://t.me/BNI_MMAD"
 
 CARD = "6219861856357990"
