@@ -1,138 +1,107 @@
 import os
 import json
 import logging
-from pathlib import Path
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
-    KeyboardButton,
+    ReplyKeyboardRemove,
 )
-from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CommandHandler,
-    CallbackQueryHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
 
-# ==================================================
+# =========================
 # تنظیمات
-# ==================================================
+# =========================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 ADMIN_ID = 8935601841
 
-CHANNEL_ID = "@BNI_MMAD"
-GROUP_ID = "@BNI_MMAD1"
-
-CHANNEL_LINK = "https://t.me/BNI_MMAD"
-GROUP_LINK = "https://t.me/BNI_MMAD1"
-
 CARD_NUMBER = "6219861856357990"
 CARD_OWNER = "رضازاده"
+
+CHANNEL_USERNAME = "@BNI_MMAD"
+CHANNEL_LINK = "https://t.me/BNI_MMAD"
+
+GROUP_USERNAME = "@BNI_MMAD1"
+GROUP_LINK = "https://t.me/BNI_MMAD1"
 
 DOGS_PRICE = 12
 TON_PRICE_PER_01 = 40000
 STARS_PRICE = 4800
 
-BASE_DIR = Path(__file__).resolve().parent
+DOGS_MIN = 1000
+TON_MIN = 0.1
+STARS_MIN = 1
+STARS_MAX = 1000
 
-USERS_FILE = BASE_DIR / "users.json"
-ORDERS_FILE = BASE_DIR / "orders.json"
+USERS_FILE = "users.json"
+ORDERS_FILE = "orders.json"
 
 logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
 )
 
 logger = logging.getLogger(__name__)
 
-# ==================================================
-# ذخیره‌سازی
-# ==================================================
 
+# =========================
+# فایل‌های ذخیره‌سازی
+# =========================
 
-def load_json(path, default):
+def load_json(filename, default):
     try:
-        if path.exists():
-            with path.open("r", encoding="utf-8") as file:
-                return json.load(file)
-    except (OSError, json.JSONDecodeError):
-        logger.exception("خطا در خواندن %s", path.name)
-
-    return default
+        with open(filename, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
 
 
-def save_json(path, data):
-    temporary = path.with_suffix(".tmp")
-
-    with temporary.open("w", encoding="utf-8") as file:
-        json.dump(
-            data,
-            file,
-            ensure_ascii=False,
-            indent=2,
-        )
-
-    temporary.replace(path)
+def save_json(filename, data):
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-users = load_json(USERS_FILE, {})
-orders = load_json(ORDERS_FILE, {})
-
-# مرحله فعلی هر کاربر
-user_states = {}
-
-# قفل ساده برای جلوگیری از ایجاد شناسه تکراری در همین اجرا
-order_counter_lock = __import__("threading").Lock()
+def load_users():
+    return load_json(USERS_FILE, {})
 
 
-def get_user_record(user):
-    uid = str(user.id)
-
-    if uid not in users:
-        users[uid] = {
-            "id": user.id,
-            "name": user.full_name,
-            "username": user.username,
-            "phone": None,
-            "created_at": datetime.now().isoformat(),
-        }
-    else:
-        users[uid]["name"] = user.full_name
-        users[uid]["username"] = user.username
-
+def save_users(users):
     save_json(USERS_FILE, users)
 
-    return users[uid]
+
+def load_orders():
+    return load_json(ORDERS_FILE, [])
 
 
-def next_order_id():
-    with order_counter_lock:
-        existing_ids = []
-
-        for key in orders:
-            try:
-                existing_ids.append(int(key))
-            except ValueError:
-                pass
-
-        return str(max(existing_ids, default=0) + 1)
+def save_orders(orders):
+    save_json(ORDERS_FILE, orders)
 
 
-def money(value):
-    return f"{int(value):,} تومان"
+# =========================
+# ابزارهای کمکی
+# =========================
+
+def is_private(update: Update) -> bool:
+    """هیچ منو یا فرایند خریدی در گروه اجرا نمی‌شود."""
+    return (
+        update.effective_chat is not None
+        and update.effective_chat.type == "private"
+    )
 
 
-def main_keyboard():
+def main_menu():
     return ReplyKeyboardMarkup(
         [
             ["🛒 خرید DOGS", "💎 خرید TON"],
@@ -169,208 +138,201 @@ def membership_keyboard():
     )
 
 
-# ==================================================
-# بررسی اجباری عضویت
-# ==================================================
-
-
 async def is_member(bot, user_id):
-    for chat_id in (CHANNEL_ID, GROUP_ID):
+    for chat_id in (CHANNEL_USERNAME, GROUP_USERNAME):
         try:
-            member = await bot.get_chat_member(
-                chat_id=chat_id,
-                user_id=user_id,
-            )
+            member = await bot.get_chat_member(chat_id, user_id)
 
             if member.status in ("left", "kicked"):
                 return False
 
-            if member.status == "restricted" and not getattr(
-                member, "is_member", False
-            ):
-                return False
-
-        except TelegramError:
+        except Exception:
             logger.exception(
-                "بررسی عضویت در %s ناموفق بود",
+                "خطا در بررسی عضویت کاربر %s در %s",
+                user_id,
                 chat_id,
             )
-            return None
+            return False
 
     return True
 
 
-async def show_membership_required(message):
-    await message.reply_text(
-        "سلام! 👋\n\n"
-        "برای استفاده از ربات، باید ابتدا عضو کانال و گروه بشی.\n\n"
-        "۱. در کانال عضو شو.\n"
-        "۲. در گروه عضو شو.\n"
-        "۳. روی «بررسی عضویت» بزن.\n\n"
-        "تا قبل از تأیید عضویت، منوی خرید فعال نمی‌شه.",
-        reply_markup=membership_keyboard(),
-    )
-
-
-async def ensure_member(update, context):
-    user = update.effective_user
-
-    if not user:
-        return False
-
-    result = await is_member(context.bot, user.id)
-
-    if result is True:
-        return True
-
-    if result is None:
-        if update.effective_message:
-            await update.effective_message.reply_text(
-                "❌ فعلاً امکان بررسی عضویت وجود نداره.\n"
-                "لطفاً کمی بعد دوباره تلاش کن."
-            )
-        return False
-
-    if update.effective_message:
-        await show_membership_required(update.effective_message)
-
-    return False
-
-
-# ==================================================
-# شروع و راهنما
-# ==================================================
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    message = update.effective_message
-
-    if not user or not message:
-        return
-
-    get_user_record(user)
-    user_states.pop(user.id, None)
-
-    if not await ensure_member(update, context):
-        return
-
-    await message.reply_text(
-        f"سلام {user.first_name} عزیز! 🎉\n\n"
-        "به ربات خرید DOGS، TON و Telegram Stars خوش اومدی.\n"
-        "از منوی پایین گزینه موردنظرت رو انتخاب کن.",
-        reply_markup=main_keyboard(),
-    )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await ensure_member(update, context):
+async def show_main_menu(update, context):
+    if not is_private(update):
         return
 
     await update.effective_message.reply_text(
-        "📚 راهنمای خرید\n\n"
-        "۱. محصول رو انتخاب کن.\n"
-        "۲. مقدار موردنظر رو وارد کن.\n"
-        "۳. آدرس کیف پول یا لینک پست رو بفرست.\n"
-        "۴. مبلغ رو به کارت اعلام‌شده پرداخت کن.\n"
-        "۵. عکس رسید رو ارسال کن.\n"
-        "۶. منتظر بررسی مدیر بمون.\n\n"
-        "سفارش فقط پس از تأیید مدیر منتشر می‌شه.",
-        reply_markup=main_keyboard(),
+        "سلام! 👋\nبه ربات فروش خوش آمدی.\n\n"
+        "از منوی زیر محصول موردنظرت رو انتخاب کن.",
+        reply_markup=main_menu(),
     )
 
 
-# ==================================================
-# دکمه بررسی عضویت
-# ==================================================
+async def require_membership(update, context):
+    if not is_private(update):
+        return False
+
+    user = update.effective_user
+
+    if await is_member(context.bot, user.id):
+        return True
+
+    await update.effective_message.reply_text(
+        "برای استفاده از ربات، ابتدا در کانال و گروه عضو شو "
+        "و سپس روی «بررسی عضویت» بزن.",
+        reply_markup=membership_keyboard(),
+    )
+    return False
 
 
-async def membership_callback(
+def get_user_record(user):
+    users = load_users()
+    uid = str(user.id)
+
+    if uid not in users:
+        users[uid] = {
+            "id": user.id,
+            "name": user.full_name,
+            "username": user.username,
+            "phone": None,
+            "created_at": datetime.now().isoformat(),
+        }
+    else:
+        users[uid]["name"] = user.full_name
+        users[uid]["username"] = user.username
+
+    save_users(users)
+    return users[uid]
+
+
+def create_order(user, product, amount, details, price):
+    orders = load_orders()
+
+    order_id = max(
+        [int(o.get("id", 0)) for o in orders],
+        default=0,
+    ) + 1
+
+    order = {
+        "id": order_id,
+        "user_id": user.id,
+        "name": user.full_name,
+        "username": user.username,
+        "product": product,
+        "amount": amount,
+        "details": details,
+        "price": price,
+        "status": "awaiting_receipt",
+        "created_at": datetime.now().isoformat(),
+        "receipt_file_id": None,
+    }
+
+    orders.append(order)
+    save_orders(orders)
+
+    return order
+
+
+def find_order(order_id):
+    orders = load_orders()
+
+    for order in orders:
+        if int(order.get("id", 0)) == int(order_id):
+            return order
+
+    return None
+
+
+def update_order(order_id, **changes):
+    orders = load_orders()
+
+    for order in orders:
+        if int(order.get("id", 0)) == int(order_id):
+            order.update(changes)
+            save_orders(orders)
+            return order
+
+    return None
+
+
+# =========================
+# شروع ربات
+# =========================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_private(update):
+        return
+
+    user = update.effective_user
+    get_user_record(user)
+
+    if not await require_membership(update, context):
+        return
+
+    context.user_data.clear()
+    await show_main_menu(update, context)
+
+
+async def check_membership_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     query = update.callback_query
+
+    if query.message.chat.type != "private":
+        await query.answer()
+        return
+
     await query.answer()
 
-    result = await is_member(
-        context.bot,
-        query.from_user.id,
-    )
-
-    if result is True:
+    if await is_member(context.bot, query.from_user.id):
         get_user_record(query.from_user)
-
         await query.message.reply_text(
-            "✅ عضویتت در کانال و گروه تأیید شد!\n"
-            "حالا می‌تونی از منوی اصلی استفاده کنی.",
-            reply_markup=main_keyboard(),
+            "عضویت تأیید شد ✅",
+            reply_markup=main_menu(),
         )
-
-    elif result is False:
+    else:
         await query.message.reply_text(
-            "❌ هنوز عضو هر دو بخش نیستی.\n"
-            "عضویتت رو کامل کن و دوباره بررسی کن.",
+            "هنوز عضویتت تأیید نشده. ابتدا عضو کانال و گروه شو.",
             reply_markup=membership_keyboard(),
         )
 
-    else:
-        await query.message.reply_text(
-            "⚠️ بررسی عضویت ناموفق بود.\n"
-            "مدیر ربات باید دسترسی ربات به کانال و گروه رو بررسی کنه."
-        )
 
+# =========================
+# شروع خرید
+# =========================
 
-# ==================================================
-# انتخاب محصول
-# ==================================================
-
-
-async def choose_product(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    if not await ensure_member(update, context):
+async def begin_purchase(update, context, product):
+    if not is_private(update):
         return
 
-    user = update.effective_user
-    text = update.effective_message.text
-
-    products = {
-        "🛒 خرید DOGS": "DOGS",
-        "💎 خرید TON": "TON",
-        "⭐ خرید Stars": "Stars",
-    }
-
-    product = products.get(text)
-
-    if not product:
+    if not await require_membership(update, context):
         return
 
-    user_states[user.id] = {
-        "step": "quantity",
-        "product": product,
-    }
+    context.user_data.clear()
+    context.user_data["product"] = product
+    context.user_data["step"] = "amount"
 
     if product == "DOGS":
-        description = (
-            "🛒 خرید DOGS\n\n"
-            "قیمت هر عدد: ۱۲ تومان\n"
-            "حداقل خرید: ۱۰۰۰ عدد\n\n"
-            "تعداد DOGS موردنظرت رو وارد کن:"
+        message = (
+            "🐶 خرید DOGS\n\n"
+            "قیمت هر DOGS: ۱۲ تومان\n"
+            "حداقل سفارش: ۱۰۰۰ عدد\n\n"
+            "تعداد DOGS موردنظر رو وارد کن:"
         )
 
     elif product == "TON":
-        description = (
+        message = (
             "💎 خرید TON\n\n"
-            "هر ۰٫۱ TON برابر ۴۰٬۰۰۰ تومان\n"
-            "حداقل خرید: ۰٫۱ TON\n"
-            "مقدار باید مضربی از ۰٫۱ باشه.\n\n"
-            "مثال: ۰٫۱ یا ۰٫۵ یا ۱\n\n"
+            "قیمت هر ۰٫۱ TON: ۴۰٬۰۰۰ تومان\n"
+            "حداقل سفارش: ۰٫۱ TON\n\n"
+            "مقدار باید مضربی از ۰٫۱ باشد.\n"
+            "مثلاً ۰٫۱ یا ۰٫۲ یا ۱\n\n"
             "مقدار TON رو وارد کن:"
         )
 
     else:
-        description = (
+        message = (
             "⭐ خرید Telegram Stars\n\n"
             "قیمت هر Star: ۴٬۸۰۰ تومان\n"
             "حداقل: ۱ عدد\n"
@@ -378,451 +340,368 @@ async def choose_product(
             "تعداد Stars رو وارد کن:"
         )
 
-    await update.effective_message.reply_text(description)
-
-
-# ==================================================
-# خواندن عدد فارسی یا انگلیسی
-# ==================================================
-
-
-def parse_number(text):
-    translation = str.maketrans(
-        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫٬",
-        "01234567890123456789.,",
+    await update.effective_message.reply_text(
+        message,
+        reply_markup=ReplyKeyboardRemove(),
     )
 
-    text = text.strip().translate(translation)
-    text = text.replace(",", ".")
+
+def calculate_price(product, amount):
+    if product == "DOGS":
+        return int(amount) * DOGS_PRICE
+
+    if product == "TON":
+        return int(round(float(amount) * 10)) * TON_PRICE_PER_01
+
+    if product == "Stars":
+        return int(amount) * STARS_PRICE
+
+    return 0
+
+
+async def process_amount(update, context):
+    if not is_private(update):
+        return
+
+    product = context.user_data.get("product")
+
+    if not product or context.user_data.get("step") != "amount":
+        return
+
+    raw = update.effective_message.text.strip()
 
     try:
-        number = Decimal(text)
-
-        if not number.is_finite():
-            return None
-
-        return number
-
-    except InvalidOperation:
-        return None
-
-
-# ==================================================
-# دریافت تعداد
-# ==================================================
-
-
-async def receive_quantity(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    user = update.effective_user
-    message = update.effective_message
-    state = user_states.get(user.id)
-
-    if not state or state.get("step") != "quantity":
-        return False
-
-    amount = parse_number(message.text)
-
-    if amount is None or amount <= 0:
-        await message.reply_text(
-            "❌ عدد واردشده معتبر نیست. دوباره تلاش کن."
+        normalized = raw.replace(",", ".").replace("٫", ".")
+        amount = float(normalized)
+    except ValueError:
+        await update.effective_message.reply_text(
+            "لطفاً مقدار رو به‌صورت عددی وارد کن."
         )
-        return True
-
-    product = state["product"]
+        return
 
     if product == "DOGS":
-        if amount < 1000 or amount != amount.to_integral_value():
-            await message.reply_text(
-                "حداقل خرید DOGS برابر ۱۰۰۰ عدد است."
+        if not amount.is_integer() or amount < DOGS_MIN:
+            await update.effective_message.reply_text(
+                "حداقل سفارش DOGS برابر ۱۰۰۰ عدد است. "
+                "لطفاً یک عدد صحیح وارد کن."
             )
-            return True
+            return
 
-        quantity = int(amount)
-        price = quantity * DOGS_PRICE
+        amount = int(amount)
 
     elif product == "TON":
-        if amount < Decimal("0.1"):
-            await message.reply_text(
-                "حداقل خرید TON برابر ۰٫۱ است."
+        if amount < TON_MIN:
+            await update.effective_message.reply_text(
+                "حداقل سفارش ۰٫۱ TON است."
             )
-            return True
+            return
 
-        if amount * 10 != (amount * 10).to_integral_value():
-            await message.reply_text(
-                "مقدار TON باید مضربی از ۰٫۱ باشه."
+        tenths = round(amount * 10)
+
+        if abs(amount * 10 - tenths) > 1e-7:
+            await update.effective_message.reply_text(
+                "مقدار باید مضربی از ۰٫۱ باشد؛ "
+                "مثلاً ۰٫۱، ۰٫۲ یا ۱."
             )
-            return True
+            return
 
-        quantity = float(amount)
-        price = int(amount * 10) * TON_PRICE_PER_01
+        amount = tenths / 10
 
     else:
         if (
-            amount < 1
-            or amount > 1000
-            or amount != amount.to_integral_value()
+            not amount.is_integer()
+            or amount < STARS_MIN
+            or amount > STARS_MAX
         ):
-            await message.reply_text(
-                "تعداد Stars باید عدد صحیح بین ۱ تا ۱۰۰۰ باشه."
+            await update.effective_message.reply_text(
+                "تعداد Stars باید عدد صحیح بین ۱ تا ۱۰۰۰ باشد."
             )
-            return True
+            return
 
-        quantity = int(amount)
-        price = quantity * STARS_PRICE
+        amount = int(amount)
 
-    state["quantity"] = quantity
-    state["price"] = price
-    state["step"] = "destination"
+    context.user_data["amount"] = amount
+    context.user_data["step"] = "details"
 
-    if product == "DOGS":
-        await message.reply_text(
-            f"مقدار: {quantity}\n"
-            f"مبلغ: {money(price)}\n\n"
-            "آدرس کیف پول DOGS رو ارسال کن:"
+    if product in ("DOGS", "TON"):
+        prompt = (
+            "آدرس کیف پول خودت رو ارسال کن.\n\n"
+            "⚠️ آدرس را با دقت بررسی کن."
         )
-
-    elif product == "TON":
-        await message.reply_text(
-            f"مقدار: {quantity} TON\n"
-            f"مبلغ: {money(price)}\n\n"
-            "آدرس کیف پول TON رو ارسال کن:"
-        )
-
     else:
-        await message.reply_text(
-            f"تعداد: {quantity} Stars\n"
-            f"مبلغ: {money(price)}\n\n"
-            "لینک پست تلگرام رو بفرست.\n"
-            "مثال: https://t.me/channelname/123"
+        prompt = (
+            "لینک پست تلگرام یا اطلاعات موردنیاز برای ارسال Stars "
+            "رو بفرست."
         )
 
-    return True
+    await update.effective_message.reply_text(prompt)
 
 
-# ==================================================
-# دریافت آدرس یا لینک پست
-# ==================================================
+async def process_details(update, context):
+    if not is_private(update):
+        return
 
+    if context.user_data.get("step") != "details":
+        return
 
-async def receive_destination(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    user = update.effective_user
-    message = update.effective_message
-    state = user_states.get(user.id)
+    product = context.user_data.get("product")
+    amount = context.user_data.get("amount")
+    details = update.effective_message.text.strip()
 
-    if not state or state.get("step") != "destination":
-        return False
-
-    destination = message.text.strip()
-    product = state["product"]
-
-    if product == "Stars":
-        if not (
-            destination.startswith("https://t.me/")
-            or destination.startswith("http://t.me/")
-        ):
-            await message.reply_text(
-                "❌ لینک معتبر تلگرام بفرست.\n"
-                "مثال: https://t.me/channelname/123"
-            )
-            return True
-
-    if len(destination) < 5:
-        await message.reply_text(
-            "اطلاعات واردشده کوتاهه. دوباره بررسی کن."
+    if not details:
+        await update.effective_message.reply_text(
+            "لطفاً اطلاعات موردنیاز رو ارسال کن."
         )
-        return True
+        return
 
-    state["destination"] = destination
-    state["step"] = "receipt"
-
-    await message.reply_text(
-        "💳 اطلاعات پرداخت\n\n"
-        f"شماره کارت:\n{CARD_NUMBER}\n\n"
-        f"صاحب کارت: {CARD_OWNER}\n"
-        f"مبلغ قابل پرداخت: {money(state['price'])}\n\n"
-        "پس از پرداخت، تصویر رسید رو به‌صورت عکس ارسال کن.\n"
-        "سفارش تا زمان بررسی مدیر در انتظار می‌مونه."
+    price = calculate_price(product, amount)
+    order = create_order(
+        update.effective_user,
+        product,
+        amount,
+        details,
+        price,
     )
 
-    return True
+    context.user_data["order_id"] = order["id"]
+    context.user_data["step"] = "receipt"
+
+    await update.effective_message.reply_text(
+        f"🧾 سفارش شماره {order['id']}\n\n"
+        f"محصول: {product}\n"
+        f"مقدار: {amount}\n"
+        f"مبلغ قابل پرداخت: {price:,} تومان\n\n"
+        f"💳 شماره کارت:\n`{CARD_NUMBER}`\n\n"
+        f"👤 به نام: {CARD_OWNER}\n\n"
+        "پس از پرداخت، عکس رسید رو همین‌جا ارسال کن.\n"
+        "سفارش بعد از بررسی مدیر تأیید یا رد می‌شه.",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove(),
+    )
 
 
-# ==================================================
-# دریافت رسید و ثبت سفارش
-# ==================================================
+# =========================
+# رسید پرداخت
+# =========================
 
+async def process_receipt(update, context):
+    if not is_private(update):
+        return
 
-async def receive_receipt(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    user = update.effective_user
-    message = update.effective_message
-    state = user_states.get(user.id)
+    if context.user_data.get("step") != "receipt":
+        return
 
-    if not state or state.get("step") != "receipt":
-        return False
-
-    if not message.photo:
-        await message.reply_text(
-            "لطفاً رسید پرداخت رو به‌صورت عکس ارسال کن."
+    if not update.effective_message.photo:
+        await update.effective_message.reply_text(
+            "لطفاً عکس رسید پرداخت رو به‌صورت تصویر ارسال کن."
         )
-        return True
+        return
 
-    order_id = next_order_id()
+    order_id = context.user_data.get("order_id")
+    order = find_order(order_id)
 
-    order = {
-        "id": order_id,
-        "user_id": user.id,
-        "user_name": user.full_name,
-        "product": state["product"],
-        "quantity": state["quantity"],
-        "price": state["price"],
-        "destination": state["destination"],
-        "receipt_file_id": message.photo[-1].file_id,
-        "status": "pending",
-        "created_at": datetime.now().isoformat(),
-    }
+    if not order or order["user_id"] != update.effective_user.id:
+        await update.effective_message.reply_text(
+            "سفارش پیدا نشد. دوباره از منوی خرید شروع کن."
+        )
+        context.user_data.clear()
+        return
 
-    orders[order_id] = order
-    save_json(ORDERS_FILE, orders)
+    photo_id = update.effective_message.photo[-1].file_id
+
+    update_order(
+        order_id,
+        receipt_file_id=photo_id,
+        status="pending_review",
+    )
 
     keyboard = InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
                     "✅ تأیید سفارش",
-                    callback_data=f"approve:{order_id}",
+                    callback_data=f"approve_{order_id}",
                 ),
                 InlineKeyboardButton(
                     "❌ رد سفارش",
-                    callback_data=f"reject:{order_id}",
+                    callback_data=f"reject_{order_id}",
                 ),
             ]
         ]
     )
 
-    caption = (
-        f"📥 سفارش جدید شماره {order_id}\n\n"
-        f"نام کاربر: {user.full_name}\n"
-        f"شناسه: {user.id}\n"
+    admin_text = (
+        f"🛒 سفارش جدید برای بررسی\n\n"
+        f"شماره سفارش: {order_id}\n"
+        f"کاربر: {order['name']}\n"
+        f"شناسه کاربر: {order['user_id']}\n"
         f"محصول: {order['product']}\n"
-        f"مقدار: {order['quantity']}\n"
-        f"مبلغ: {money(order['price'])}\n"
-        f"مقصد: {order['destination']}\n"
-        "وضعیت: در انتظار بررسی"
+        f"مقدار: {order['amount']}\n"
+        f"مبلغ: {order['price']:,} تومان\n"
+        f"اطلاعات تحویل: {order['details']}\n"
     )
 
     try:
         await context.bot.send_photo(
             chat_id=ADMIN_ID,
-            photo=order["receipt_file_id"],
-            caption=caption,
+            photo=photo_id,
+            caption=admin_text,
             reply_markup=keyboard,
         )
+    except Exception:
+        logger.exception("ارسال رسید به مدیر ناموفق بود")
 
-    except TelegramError:
-        logger.exception("ارسال سفارش برای مدیر ناموفق بود")
-
-        await message.reply_text(
-            "سفارش ثبت شد، اما ارسال برای مدیر ناموفق بود.\n"
-            "مدیر باید ربات رو در تلگرام باز کنه و /start بزنه."
+        await update.effective_message.reply_text(
+            "ارسال رسید برای مدیر ناموفق بود. "
+            "لطفاً کمی بعد دوباره تلاش کن یا با پشتیبانی تماس بگیر."
         )
+        return
 
-        user_states.pop(user.id, None)
-        return True
+    context.user_data.clear()
 
-    await message.reply_text(
-        f"✅ سفارش شماره {order_id} ثبت شد.\n"
-        "رسید برای مدیر ارسال شد.\n"
-        "پس از بررسی، نتیجه بهت اطلاع داده می‌شه.",
-        reply_markup=main_keyboard(),
+    await update.effective_message.reply_text(
+        "رسیدت دریافت شد ✅\n"
+        "سفارش برای مدیر ارسال شد و پس از بررسی نتیجه اعلام می‌شه.",
+        reply_markup=main_menu(),
     )
 
-    user_states.pop(user.id, None)
 
-    return True
+# =========================
+# تأیید و رد سفارش توسط مدیر
+# =========================
 
-
-# ==================================================
-# تأیید یا رد سفارش توسط مدیر
-# ==================================================
-
-
-async def admin_order_action(
+async def admin_order_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     query = update.callback_query
+    await query.answer()
 
     if query.from_user.id != ADMIN_ID:
         await query.answer(
-            "این دکمه فقط برای مدیر فعاله.",
+            "فقط مدیر اجازه انجام این کار رو داره.",
             show_alert=True,
         )
         return
 
-    await query.answer()
+    data = query.data
 
-    action, order_id = query.data.split(":", 1)
+    if data.startswith("approve_"):
+        order_id = int(data.split("_", 1)[1])
+        new_status = "approved"
 
-    order = orders.get(order_id)
+    elif data.startswith("reject_"):
+        order_id = int(data.split("_", 1)[1])
+        new_status = "rejected"
+
+    else:
+        return
+
+    order = find_order(order_id)
 
     if not order:
-        await query.answer(
-            "سفارش پیدا نشد.",
-            show_alert=True,
+        await query.message.reply_text("سفارش پیدا نشد.")
+        return
+
+    if order["status"] != "pending_review":
+        await query.message.reply_text(
+            "این سفارش قبلاً بررسی شده یا دیگر در انتظار بررسی نیست."
         )
         return
 
-    if order["status"] != "pending":
-        await query.answer(
-            "این سفارش قبلاً بررسی شده.",
-            show_alert=True,
+    update_order(order_id, status=new_status)
+
+    if new_status == "approved":
+        channel_text = (
+            f"✅ سفارش تأیید شد\n\n"
+            f"شماره سفارش: {order_id}\n"
+            f"محصول: {order['product']}\n"
+            f"مقدار: {order['amount']}\n"
+            f"مبلغ: {order['price']:,} تومان\n"
         )
-        return
 
-    if action == "approve":
-        order["status"] = "approved"
-    else:
-        order["status"] = "rejected"
-
-    order["reviewed_at"] = datetime.now().isoformat()
-    save_json(ORDERS_FILE, orders)
-
-    user_id = order["user_id"]
-
-    if action == "approve":
         try:
             await context.bot.send_message(
-                chat_id=user_id,
-                text=(
-                    f"✅ سفارش شماره {order_id} تأیید شد.\n\n"
-                    f"محصول: {order['product']}\n"
-                    f"مقدار: {order['quantity']}\n"
-                    "سفارش شما توسط مدیر تأیید شد."
-                ),
+                chat_id=CHANNEL_USERNAME,
+                text=channel_text,
             )
-        except TelegramError:
-            logger.exception("ارسال پیام تأیید به کاربر ناموفق بود")
-
-        # فقط سفارش تأییدشده منتشر می‌شود.
-        try:
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=(
-                    f"✅ سفارش تأییدشده شماره {order_id}\n\n"
-                    f"محصول: {order['product']}\n"
-                    f"مقدار: {order['quantity']}\n"
-                    "وضعیت: تأییدشده"
-                ),
-            )
-        except TelegramError:
+        except Exception:
             logger.exception("انتشار سفارش در کانال ناموفق بود")
 
-        result = f"✅ سفارش {order_id} تأیید شد."
+        user_text = (
+            f"سفارش شماره {order_id} تأیید شد ✅\n"
+            "برای پیگیری تحویل، با پشتیبانی تماس بگیر."
+        )
 
     else:
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=(
-                    f"❌ سفارش شماره {order_id} رد شد.\n"
-                    "برای پیگیری با پشتیبانی تماس بگیر."
-                ),
-            )
-        except TelegramError:
-            logger.exception("اطلاع‌رسانی رد سفارش ناموفق بود")
-
-        result = (
-            f"❌ سفارش {order_id} رد شد.\n"
-            "این سفارش در کانال منتشر نمی‌شود."
+        user_text = (
+            f"سفارش شماره {order_id} رد شد ❌\n"
+            "اگر فکر می‌کنی اشتباهی رخ داده، با پشتیبانی تماس بگیر."
         )
 
     try:
-        await query.edit_message_caption(
-            caption=result,
-            reply_markup=None,
+        await context.bot.send_message(
+            chat_id=order["user_id"],
+            text=user_text,
         )
-    except TelegramError:
-        logger.exception("ویرایش پیام سفارش ناموفق بود")
+    except Exception:
+        logger.exception("اطلاع‌رسانی به مشتری ناموفق بود")
+
+    await query.message.reply_text(
+        f"سفارش {order_id} بررسی شد: {new_status}"
+    )
 
 
-# ==================================================
-# سفارش‌های کاربر
-# ==================================================
+# =========================
+# حساب کاربری و سفارش‌ها
+# =========================
 
-
-async def my_orders(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    if not await ensure_member(update, context):
+async def show_orders(update, context):
+    if not is_private(update):
         return
 
-    user_id = update.effective_user.id
-
-    items = [
-        order
-        for order in orders.values()
-        if order["user_id"] == user_id
+    orders = load_orders()
+    user_orders = [
+        order for order in orders
+        if order.get("user_id") == update.effective_user.id
     ]
 
-    if not items:
+    if not user_orders:
         await update.effective_message.reply_text(
-            "📦 هنوز سفارشی ثبت نکردی."
+            "هنوز سفارشی ثبت نکردی.",
+            reply_markup=main_menu(),
         )
         return
-
-    status_names = {
-        "pending": "در انتظار بررسی",
-        "approved": "تأییدشده",
-        "rejected": "ردشده",
-    }
 
     lines = ["📦 سفارش‌های شما:\n"]
 
-    for order in sorted(
-        items,
-        key=lambda item: int(item["id"]),
-        reverse=True,
-    )[:20]:
+    for order in user_orders[-20:]:
         lines.append(
-            f"شماره سفارش: {order['id']}\n"
+            f"شماره: {order['id']}\n"
             f"محصول: {order['product']}\n"
-            f"مقدار: {order['quantity']}\n"
-            f"مبلغ: {money(order['price'])}\n"
-            f"وضعیت: {status_names.get(order['status'], 'نامشخص')}\n"
+            f"مقدار: {order['amount']}\n"
+            f"مبلغ: {order['price']:,} تومان\n"
+            f"وضعیت: {order['status']}\n"
         )
 
     await update.effective_message.reply_text(
         "\n".join(lines),
-        reply_markup=main_keyboard(),
+        reply_markup=main_menu(),
     )
 
 
-# ==================================================
-# حساب کاربری و شماره تلفن
-# ==================================================
-
-
-async def account(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    if not await ensure_member(update, context):
+async def show_account(update, context):
+    if not is_private(update):
         return
 
-    user = update.effective_user
-    record = get_user_record(user)
+    user = get_user_record(update.effective_user)
 
-    phone = record.get("phone") or "ثبت نشده"
+    keyboard = ReplyKeyboardMarkup(
+        [["📱 ارسال شماره تلفن"], ["🔙 منوی اصلی"]],
+        resize_keyboard=True,
+    )
+
+    from telegram import KeyboardButton
 
     keyboard = ReplyKeyboardMarkup(
         [
@@ -837,201 +716,231 @@ async def account(
         resize_keyboard=True,
     )
 
+    phone = user.get("phone") or "ثبت نشده"
+
     await update.effective_message.reply_text(
         f"👤 حساب کاربری\n\n"
-        f"نام: {user.full_name}\n"
-        f"شناسه: {user.id}\n"
-        f"نام کاربری: @{user.username or 'ندارد'}\n"
+        f"نام: {user['name']}\n"
+        f"شناسه تلگرام: {user['id']}\n"
+        f"نام کاربری: @{user['username'] or 'ندارد'}\n"
         f"شماره تلفن: {phone}",
         reply_markup=keyboard,
     )
 
 
-async def receive_contact(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    user = update.effective_user
+async def save_contact(update, context):
+    if not is_private(update):
+        return
+
     contact = update.effective_message.contact
 
-    if not await ensure_member(update, context):
+    if not contact:
         return
 
-    if contact.user_id != user.id:
+    if contact.user_id and contact.user_id != update.effective_user.id:
         await update.effective_message.reply_text(
-            "لطفاً شماره خودت رو با دکمه ارسال شماره بفرست."
+            "لطفاً شماره تلفن خودت رو ارسال کن."
         )
         return
 
-    record = get_user_record(user)
-    record["phone"] = contact.phone_number
-    save_json(USERS_FILE, users)
+    users = load_users()
+    uid = str(update.effective_user.id)
+
+    if uid not in users:
+        users[uid] = {
+            "id": update.effective_user.id,
+            "name": update.effective_user.full_name,
+            "username": update.effective_user.username,
+            "created_at": datetime.now().isoformat(),
+        }
+
+    users[uid]["phone"] = contact.phone_number
+    save_users(users)
 
     await update.effective_message.reply_text(
-        "✅ شماره تلفنت ثبت شد.",
-        reply_markup=main_keyboard(),
+        "شماره تلفنت ثبت شد ✅",
+        reply_markup=main_menu(),
     )
 
 
-# ==================================================
-# پشتیبانی
-# ==================================================
+# =========================
+# راهنما و پشتیبانی
+# =========================
 
-
-async def support(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    if not await ensure_member(update, context):
+async def show_help(update, context):
+    if not is_private(update):
         return
 
     await update.effective_message.reply_text(
-        "📞 پشتیبانی\n\n"
-        "شناسه مدیر ربات:\n"
-        f"{ADMIN_ID}\n\n"
-        "برای پیگیری سفارش، شماره سفارش رو هم بنویس."
+        "📚 راهنمای خرید\n\n"
+        "۱. محصول موردنظر رو انتخاب کن.\n"
+        "۲. مقدار رو وارد کن.\n"
+        "۳. آدرس کیف پول یا لینک لازم رو بفرست.\n"
+        "۴. مبلغ نمایش‌داده‌شده رو پرداخت کن.\n"
+        "۵. عکس رسید رو ارسال کن.\n"
+        "۶. منتظر بررسی مدیر بمون.\n\n"
+        "DOGS: هر عدد ۱۲ تومان، حداقل ۱۰۰۰ عدد.\n"
+        "TON: هر ۰٫۱ برابر ۴۰٬۰۰۰ تومان.\n"
+        "Stars: هر عدد ۴٬۸۰۰ تومان، از ۱ تا ۱۰۰۰ عدد.",
+        reply_markup=main_menu(),
     )
 
 
-# ==================================================
-# مدیریت منو
-# ==================================================
-
-
-async def menu_router(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    user = update.effective_user
-    message = update.effective_message
-    text = message.text
-
-    if not await ensure_member(update, context):
+async def show_support(update, context):
+    if not is_private(update):
         return
 
-    if text == "🔙 منوی اصلی":
-        user_states.pop(user.id, None)
+    await update.effective_message.reply_text(
+        "📞 برای پشتیبانی، به مدیر ربات پیام بده:\n"
+        "شناسه مدیر: 8935601841\n\n"
+        "شماره سفارش خودت رو هم ارسال کن تا پیگیری راحت‌تر باشه.",
+        reply_markup=main_menu(),
+    )
 
-        await message.reply_text(
-            "به منوی اصلی برگشتی.",
-            reply_markup=main_keyboard(),
+
+# =========================
+# منوی اصلی
+# =========================
+
+async def menu_router(update, context):
+    if not is_private(update):
+        return
+
+    text = update.effective_message.text
+
+    if not text:
+        return
+
+    if not await require_membership(update, context):
+        return
+
+    if text == "🛒 خرید DOGS":
+        await begin_purchase(update, context, "DOGS")
+
+    elif text == "💎 خرید TON":
+        await begin_purchase(update, context, "TON")
+
+    elif text == "⭐ خرید Stars":
+        await begin_purchase(update, context, "Stars")
+
+    elif text == "📦 سفارش‌های من":
+        await show_orders(update, context)
+
+    elif text == "👤 حساب کاربری":
+        await show_account(update, context)
+
+    elif text == "📞 پشتیبانی":
+        await show_support(update, context)
+
+    elif text == "📚 راهنما":
+        await show_help(update, context)
+
+    elif text == "🔙 منوی اصلی":
+        context.user_data.clear()
+        await show_main_menu(update, context)
+
+    elif context.user_data.get("step") == "amount":
+        await process_amount(update, context)
+
+    elif context.user_data.get("step") == "details":
+        await process_details(update, context)
+
+    else:
+        await update.effective_message.reply_text(
+            "لطفاً یکی از گزینه‌های منو رو انتخاب کن.",
+            reply_markup=main_menu(),
         )
+
+
+# =========================
+# خطاهای ناشناخته
+# =========================
+
+async def unknown_command(update, context):
+    if not is_private(update):
         return
 
-    if text in ("🛒 خرید DOGS", "💎 خرید TON", "⭐ خرید Stars"):
-        await choose_product(update, context)
-        return
-
-    if text == "📦 سفارش‌های من":
-        await my_orders(update, context)
-        return
-
-    if text == "👤 حساب کاربری":
-        await account(update, context)
-        return
-
-    if text == "📞 پشتیبانی":
-        await support(update, context)
-        return
-
-    if text == "📚 راهنما":
-        await help_command(update, context)
-        return
-
-    state = user_states.get(user.id, {})
-    step = state.get("step")
-
-    if step == "quantity":
-        await receive_quantity(update, context)
-        return
-
-    if step == "destination":
-        await receive_destination(update, context)
-        return
-
-    if step == "receipt":
-        await message.reply_text(
-            "برای تکمیل سفارش، تصویر رسید رو به‌صورت عکس ارسال کن."
-        )
-        return
-
-    await message.reply_text(
-        "از منوی پایین یک گزینه انتخاب کن.",
-        reply_markup=main_keyboard(),
+    await update.effective_message.reply_text(
+        "دستور شناخته نشد. از منوی اصلی استفاده کن.",
+        reply_markup=main_menu(),
     )
 
 
-# ==================================================
-# مدیریت خطاها
-# ==================================================
-
-
-async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    logger.error(
-        "خطای ربات",
-        exc_info=context.error,
-    )
-
-
-# ==================================================
+# =========================
 # اجرای ربات
-# ==================================================
-
+# =========================
 
 def main():
     if not BOT_TOKEN:
         raise RuntimeError(
-            "توکن تنظیم نشده است. "
-            "در GitHub Secrets یک Secret به نام BOT_TOKEN بساز."
+            "توکن تنظیم نشده است. در GitHub Secrets مقدار BOT_TOKEN را ثبت کن."
         )
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-
+    # بررسی عضویت و تأیید مدیر از طریق دکمه‌های شیشه‌ای
     app.add_handler(
         CallbackQueryHandler(
-            membership_callback,
+            check_membership_callback,
             pattern=r"^check_membership$",
         )
     )
 
     app.add_handler(
         CallbackQueryHandler(
-            admin_order_action,
-            pattern=r"^(approve|reject):\d+$",
+            admin_order_callback,
+            pattern=r"^(approve|reject)_\d+$",
+        )
+    )
+
+    # تمام ورودی‌های عادی فقط در پیوی
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start,
+            filters=filters.ChatType.PRIVATE,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "help",
+            show_help,
+            filters=filters.ChatType.PRIVATE,
         )
     )
 
     app.add_handler(
         MessageHandler(
-            filters.CONTACT,
-            receive_contact,
+            filters.ChatType.PRIVATE & filters.CONTACT,
+            save_contact,
         )
     )
 
     app.add_handler(
         MessageHandler(
-            filters.PHOTO,
-            receive_receipt,
+            filters.ChatType.PRIVATE & filters.PHOTO,
+            process_receipt,
         )
     )
 
     app.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.ChatType.PRIVATE
+            & filters.TEXT
+            & ~filters.COMMAND,
             menu_router,
         )
     )
 
-    app.add_error_handler(error_handler)
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.COMMAND,
+            unknown_command,
+        )
+    )
 
-    logger.info("ربات در حال اجراست.")
-
+    logger.info("ربات اجرا شد.")
     app.run_polling(drop_pending_updates=True)
 
 
