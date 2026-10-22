@@ -3,6 +3,7 @@ import json
 import logging
 import asyncio
 
+from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,14 +30,13 @@ from telegram.ext import (
 
 
 # =====================================================
-# تنظیمات اصلی
+# تنظیمات
 # =====================================================
 
-# توکن قبلی خودت را در این متغیر قرار بده.
-# اگر از قبل در محیط سیستم تنظیم شده باشد، همان استفاده می‌شود.
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8714704830:AAGYitrRQQ0TLv2Zg-fc1gbKTyi6Jm08n-g")
 
-ADMIN_CHAT_ID = 8935601841 # آیدی عددی مدیر را وارد کن.
+# آیدی عددی مدیر را وارد کن.
+ADMIN_CHAT_ID = 8935601841
 
 CARD_NUMBER = "6219861856357990"
 CARD_HOLDER = "رضازاده"
@@ -48,6 +48,7 @@ CHANNEL_LINK = "https://t.me/BNI_MMAD"
 GROUP_LINK = "https://t.me/BNI_MMAD1"
 
 DATA_DIR = Path(__file__).resolve().parent
+
 USERS_FILE = DATA_DIR / "users.json"
 ORDERS_FILE = DATA_DIR / "orders.json"
 
@@ -91,8 +92,8 @@ def load_json(path, default):
         return default
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(path, "r", encoding="utf-8") as file:
+            return json.load(file)
 
     except (OSError, json.JSONDecodeError):
         logger.exception("خطا در خواندن فایل %s", path)
@@ -102,10 +103,15 @@ def load_json(path, default):
 def save_json(path, data):
     temporary = path.with_suffix(path.suffix + ".tmp")
 
-    with open(temporary, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
+    with open(temporary, "w", encoding="utf-8") as file:
+        json.dump(
+            data,
+            file,
+            ensure_ascii=False,
+            indent=2,
+        )
+        file.flush()
+        os.fsync(file.fileno())
 
     os.replace(temporary, path)
 
@@ -114,6 +120,9 @@ users = load_json(USERS_FILE, {})
 orders = load_json(ORDERS_FILE, {})
 
 storage_lock = asyncio.Lock()
+
+# جلوگیری از بررسی هم‌زمان یک سفارش
+order_locks = defaultdict(asyncio.Lock)
 
 
 async def save_users():
@@ -128,7 +137,7 @@ async def save_orders():
 
 def next_order_id():
     return max(
-        (int(k) for k in orders),
+        (int(key) for key in orders),
         default=0,
     ) + 1
 
@@ -162,8 +171,18 @@ def menu():
 
 def membership_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("عضویت در کانال", url=CHANNEL_LINK)],
-        [InlineKeyboardButton("عضویت در گروه", url=GROUP_LINK)],
+        [
+            InlineKeyboardButton(
+                "عضویت در کانال",
+                url=CHANNEL_LINK,
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "عضویت در گروه",
+                url=GROUP_LINK,
+            )
+        ],
         [
             InlineKeyboardButton(
                 "بررسی مجدد عضویت",
@@ -200,7 +219,7 @@ async def check_one_membership(bot, user_id, chat_id):
         return True
 
     except TelegramError:
-        # خطای API نباید باعث رد شدن کاربر شود.
+        # خطای API به‌تنهایی باعث رد کاربر نمی‌شود.
         logger.exception(
             "خطا در بررسی عضویت کاربر %s در %s",
             user_id,
@@ -209,17 +228,23 @@ async def check_one_membership(bot, user_id, chat_id):
         return True
 
     except Exception:
-        logger.exception("خطای غیرمنتظره در بررسی عضویت")
+        logger.exception(
+            "خطای غیرمنتظره در بررسی عضویت"
+        )
         return True
 
 
 async def check_membership(bot, user_id):
     channel_ok = await check_one_membership(
-        bot, user_id, REQUIRED_CHANNEL
+        bot,
+        user_id,
+        REQUIRED_CHANNEL,
     )
 
     group_ok = await check_one_membership(
-        bot, user_id, REQUIRED_GROUP
+        bot,
+        user_id,
+        REQUIRED_GROUP,
     )
 
     return channel_ok and group_ok
@@ -229,10 +254,14 @@ async def check_membership(bot, user_id):
 # شروع ربات
 # =====================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     user = update.effective_user
+    message = update.effective_message
 
-    if not user:
+    if not user or not message:
         return ConversationHandler.END
 
     uid = str(user.id)
@@ -253,13 +282,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await save_users()
     except OSError:
         logger.exception("ذخیره اطلاعات کاربر ناموفق بود")
-        await update.effective_message.reply_text(
-            "خطا در ذخیره اطلاعات. لطفاً بعداً تلاش کن."
+        await message.reply_text(
+            "خطا در ذخیره اطلاعات. بعداً دوباره تلاش کن."
         )
         return ConversationHandler.END
 
     if not await check_membership(context.bot, user.id):
-        await update.effective_message.reply_text(
+        await message.reply_text(
             "برای استفاده از ربات، ابتدا عضو کانال و گروه شو.",
             reply_markup=membership_menu(),
         )
@@ -277,14 +306,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             one_time_keyboard=True,
         )
 
-        await update.effective_message.reply_text(
+        await message.reply_text(
             "سلام!\nبرای ثبت‌نام شماره تلفنت را ارسال کن.",
             reply_markup=keyboard,
         )
 
         return GET_PHONE
 
-    await update.effective_message.reply_text(
+    await message.reply_text(
         "خوش آمدی! محصول موردنظر را انتخاب کن.",
         reply_markup=menu(),
     )
@@ -333,8 +362,10 @@ async def receive_phone(
         await save_users()
     except OSError:
         logger.exception("ذخیره شماره تلفن ناموفق بود")
+        users[uid]["phone"] = None
+
         await message.reply_text(
-            "ثبت شماره تلفن ناموفق بود. لطفاً دوباره تلاش کن."
+            "ثبت شماره تلفن ناموفق بود. دوباره تلاش کن."
         )
         return GET_PHONE
 
@@ -476,12 +507,11 @@ async def receive_amount(
     try:
         amount = Decimal(message.text.strip())
         product = context.user_data.get("product")
-
         total = calculate_price(product, amount)
 
     except (InvalidOperation, ValueError, AttributeError) as exc:
         await message.reply_text(
-            f"مقدار معتبر نیست: {exc}\nلطفاً دوباره وارد کن."
+            f"مقدار معتبر نیست: {exc}\nدوباره وارد کن."
         )
         return GET_AMOUNT
 
@@ -499,15 +529,13 @@ async def receive_amount(
 
 
 # =====================================================
-# دریافت کیف پول
+# دریافت کیف پول و ایجاد سفارش
 # =====================================================
 
 async def receive_wallet(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    global orders
-
     message = update.effective_message
     user = update.effective_user
 
@@ -530,36 +558,41 @@ async def receive_wallet(
         )
         return ConversationHandler.END
 
-    order_id = next_order_id()
     uid = str(user.id)
 
-    order = {
-        "order_id": order_id,
-        "user_id": user.id,
-        "username": user.username,
-        "first_name": user.first_name,
-        "phone": users.get(uid, {}).get("phone"),
-        "product": product,
-        "amount": amount,
-        "wallet": wallet,
-        "total": total,
-        "status": "awaiting_receipt",
-        "receipt_file_id": None,
-        "created_at": now(),
-        "updated_at": now(),
-    }
+    async with storage_lock:
+        order_id = max(
+            (int(key) for key in orders),
+            default=0,
+        ) + 1
 
-    orders[str(order_id)] = order
+        order = {
+            "order_id": order_id,
+            "user_id": user.id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "phone": users.get(uid, {}).get("phone"),
+            "product": product,
+            "amount": amount,
+            "wallet": wallet,
+            "total": total,
+            "status": "awaiting_receipt",
+            "receipt_file_id": None,
+            "created_at": now(),
+            "updated_at": now(),
+        }
 
-    try:
-        await save_orders()
-    except OSError:
-        orders.pop(str(order_id), None)
-        logger.exception("ذخیره سفارش ناموفق بود")
-        await message.reply_text(
-            "ثبت سفارش ناموفق بود. لطفاً دوباره تلاش کن."
-        )
-        return ConversationHandler.END
+        orders[str(order_id)] = order
+
+        try:
+            save_json(ORDERS_FILE, orders)
+        except OSError:
+            orders.pop(str(order_id), None)
+            logger.exception("ذخیره سفارش ناموفق بود")
+            await message.reply_text(
+                "ثبت سفارش ناموفق بود. دوباره تلاش کن."
+            )
+            return ConversationHandler.END
 
     context.user_data["order_id"] = order_id
 
@@ -579,7 +612,7 @@ async def receive_wallet(
 
 
 # =====================================================
-# دریافت عکس رسید
+# دریافت رسید
 # =====================================================
 
 async def receive_receipt(
@@ -587,11 +620,10 @@ async def receive_receipt(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     message = update.effective_message
-    user = update.effective_user
 
     if not message.photo:
         await message.reply_text(
-            "لطفاً تصویر رسید پرداخت را به صورت عکس ارسال کن."
+            "لطفاً تصویر رسید پرداخت را به‌صورت عکس ارسال کن."
         )
         return GET_RECEIPT
 
@@ -604,11 +636,12 @@ async def receive_receipt(
         )
         return ConversationHandler.END
 
-    order = orders.get(str(order_id))
+    order_key = str(order_id)
+    order = orders.get(order_key)
 
     if not order or order["status"] != "awaiting_receipt":
         await message.reply_text(
-            "سفارش در وضعیت انتظار رسید نیست.",
+            "این سفارش در انتظار رسید نیست.",
             reply_markup=menu(),
         )
         return ConversationHandler.END
@@ -624,6 +657,8 @@ async def receive_receipt(
     except OSError:
         order["status"] = "awaiting_receipt"
         order["receipt_file_id"] = None
+
+        logger.exception("ذخیره رسید ناموفق بود")
         await message.reply_text(
             "ذخیره رسید ناموفق بود. دوباره عکس را ارسال کن."
         )
@@ -671,7 +706,7 @@ async def receive_receipt(
         logger.exception("ارسال رسید به مدیر ناموفق بود")
         await message.reply_text(
             "رسید ذخیره شد، اما ارسال آن به مدیر ناموفق بود. "
-            "لطفاً با پشتیبانی تماس بگیر.",
+            "با پشتیبانی تماس بگیر.",
             reply_markup=menu(),
         )
         return ConversationHandler.END
@@ -688,7 +723,7 @@ async def receive_receipt(
 
 
 # =====================================================
-# تأیید و رد سفارش توسط مدیر
+# تأیید و رد سفارش
 # =====================================================
 
 async def admin_order_action(
@@ -697,6 +732,9 @@ async def admin_order_action(
 ):
     query = update.callback_query
 
+    if not query:
+        return
+
     if query.from_user.id != ADMIN_CHAT_ID:
         await query.answer(
             "اجازه انجام این عملیات را نداری.",
@@ -704,64 +742,114 @@ async def admin_order_action(
         )
         return
 
-    await query.answer()
-
-    action, order_id = query.data.split(":", 1)
-    order = orders.get(order_id)
-
-    if not order:
-        await query.message.reply_text("سفارش پیدا نشد.")
-        return
-
-    if order["status"] != "pending_admin":
-        await query.message.reply_text(
-            "این سفارش قبلاً بررسی شده است."
-        )
-        return
-
-    if action == "approve":
-        order["status"] = "approved"
-        result = "تأیید شد"
-        user_message = (
-            f"✅ سفارش {order_id} تأیید شد.\n"
-            "برای پیگیری بیشتر از پشتیبانی استفاده کن."
-        )
-
-    elif action == "reject":
-        order["status"] = "rejected"
-        result = "رد شد"
-        user_message = (
-            f"❌ سفارش {order_id} رد شد.\n"
-            "برای پیگیری با پشتیبانی تماس بگیر."
-        )
-
-    else:
-        return
-
-    order["updated_at"] = now()
-    order["reviewed_by"] = query.from_user.id
-
     try:
-        await save_orders()
-    except OSError:
-        logger.exception("ذخیره نتیجه سفارش ناموفق بود")
-        await query.message.reply_text(
-            "ذخیره نتیجه ناموفق بود. عملیات را دوباره بررسی کن."
+        action, order_id = query.data.split(":", 1)
+    except (AttributeError, ValueError):
+        await query.answer(
+            "اطلاعات عملیات نامعتبر است.",
+            show_alert=True,
         )
         return
 
-    await query.edit_message_reply_markup(reply_markup=None)
-    await query.message.reply_text(
-        f"سفارش {order_id} {result}."
-    )
-
-    try:
-        await context.bot.send_message(
-            chat_id=order["user_id"],
-            text=user_message,
+    if action not in ("approve", "reject"):
+        await query.answer(
+            "عملیات نامعتبر است.",
+            show_alert=True,
         )
-    except TelegramError:
-        logger.exception("ارسال نتیجه به کاربر ناموفق بود")
+        return
+
+    async with order_locks[order_id]:
+        order = orders.get(order_id)
+
+        if not order:
+            await query.answer(
+                "سفارش پیدا نشد.",
+                show_alert=True,
+            )
+            return
+
+        if order.get("status") != "pending_admin":
+            # پیام تکراری در چت مدیر ارسال نمی‌شود.
+            await query.answer(
+                "این سفارش قبلاً بررسی شده است.",
+                show_alert=True,
+            )
+            return
+
+        old_status = order["status"]
+
+        if action == "approve":
+            order["status"] = "approved"
+            result = "تأیید شد"
+            user_message = (
+                f"✅ سفارش شماره {order_id} تأیید شد.\n"
+                "برای پیگیری بیشتر از پشتیبانی استفاده کن."
+            )
+        else:
+            order["status"] = "rejected"
+            result = "رد شد"
+            user_message = (
+                f"❌ سفارش شماره {order_id} رد شد.\n"
+                "برای پیگیری با پشتیبانی تماس بگیر."
+            )
+
+        order["updated_at"] = now()
+        order["reviewed_by"] = query.from_user.id
+
+        try:
+            await save_orders()
+        except OSError:
+            order["status"] = old_status
+            logger.exception(
+                "ذخیره نتیجه سفارش %s ناموفق بود",
+                order_id,
+            )
+            await query.answer(
+                "ذخیره نتیجه ناموفق بود؛ دوباره تلاش کن.",
+                show_alert=True,
+            )
+            return
+
+        # حذف دکمه‌ها
+        try:
+            await query.edit_message_reply_markup(
+                reply_markup=None
+            )
+        except TelegramError:
+            logger.exception(
+                "حذف دکمه‌های سفارش %s ناموفق بود",
+                order_id,
+            )
+
+        await query.answer(
+            f"سفارش {result}.",
+            show_alert=True,
+        )
+
+        # نمایش نتیجه روی همان پیام مدیر
+        try:
+            old_caption = query.message.caption or ""
+            await query.edit_message_caption(
+                caption=old_caption + f"\n\n📌 نتیجه بررسی: {result}",
+                reply_markup=None,
+            )
+        except TelegramError:
+            logger.exception(
+                "ویرایش پیام سفارش %s ناموفق بود",
+                order_id,
+            )
+
+        # اطلاع به کاربر
+        try:
+            await context.bot.send_message(
+                chat_id=order["user_id"],
+                text=user_message,
+            )
+        except TelegramError:
+            logger.exception(
+                "ارسال نتیجه سفارش %s به کاربر ناموفق بود",
+                order_id,
+            )
 
 
 # =====================================================
@@ -786,7 +874,7 @@ async def account(
 
 
 # =====================================================
-# سفارش‌های کاربر
+# سفارش‌های من
 # =====================================================
 
 async def my_orders(
@@ -846,7 +934,7 @@ async def support_start(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     await update.effective_message.reply_text(
-        "پیام خود را برای پشتیبانی بفرست. "
+        "پیامت را برای پشتیبانی بفرست. "
         "می‌توانی متن یا عکس ارسال کنی."
     )
 
@@ -880,13 +968,13 @@ async def support_receive(
     except TelegramError:
         logger.exception("ارسال پیام پشتیبانی ناموفق بود")
         await message.reply_text(
-            "ارسال پیام ناموفق بود. لطفاً دوباره تلاش کن.",
+            "ارسال پیام ناموفق بود. دوباره تلاش کن.",
             reply_markup=menu(),
         )
         return ConversationHandler.END
 
     await message.reply_text(
-        "پیام شما به مدیر ارسال شد.",
+        "پیامت به مدیر ارسال شد.",
         reply_markup=menu(),
     )
 
@@ -905,9 +993,9 @@ async def help_command(
         "راهنمای خرید\n\n"
         "DOGS: هر عدد ۱۲ تومان، حداقل ۱۰۰۰ عدد.\n"
         "TON: هر ۰٫۱ واحد ۴۰٬۰۰۰ تومان، حداقل ۰٫۱.\n\n"
-        "مراحل خرید: انتخاب محصول، مقدار، آدرس کیف پول، "
-        "پرداخت و ارسال عکس رسید.\n"
-        "پس از آن مدیر سفارش را بررسی می‌کند.",
+        "مراحل خرید: انتخاب محصول، واردکردن مقدار، "
+        "ارسال آدرس کیف پول، پرداخت و ارسال عکس رسید.\n"
+        "سپس مدیر سفارش را بررسی می‌کند.",
         reply_markup=menu(),
     )
 
@@ -940,7 +1028,7 @@ async def admin_stats(
 ):
     if not admin_only(update):
         await update.effective_message.reply_text(
-            "شما اجازه دسترسی ندارید."
+            "اجازه دسترسی نداری."
         )
         return
 
@@ -984,13 +1072,13 @@ async def error_handler(
 
 
 # =====================================================
-# اجرای برنامه
+# اجرای ربات
 # =====================================================
 
 def main():
     if BOT_TOKEN == "YOUR_BOT_TOKEN":
         raise RuntimeError(
-            "توکن ربات را در BOT_TOKEN تنظیم کن."
+            "توکن ربات را در متغیر محیطی BOT_TOKEN تنظیم کن."
         )
 
     if ADMIN_CHAT_ID == 123456789:
@@ -1004,18 +1092,20 @@ def main():
         .build()
     )
 
-    # مکالمه قبل از handlerهای عمومی ثبت می‌شود.
     conversation = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
+
             MessageHandler(
                 filters.Regex(r"^🛒 خرید DOGS$"),
                 select_dogs,
             ),
+
             MessageHandler(
                 filters.Regex(r"^💎 خرید TON$"),
                 select_ton,
             ),
+
             MessageHandler(
                 filters.Regex(r"^📞 پشتیبانی$"),
                 support_start,
