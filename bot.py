@@ -33,7 +33,7 @@ from telegram.ext import (
 # تنظیمات
 # =====================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8714704830:AAGYitrRQQ0TLv2Zg-fc1gbKTyi6Jm08n-g")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8475213468:AAELgmYRsEzIq5Tw3yObM_Icql2y-mAZA78")
 
 # آیدی عددی مدیر را وارد کن.
 ADMIN_CHAT_ID = 8935601841
